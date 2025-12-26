@@ -4,7 +4,8 @@ Bot en Python que automatiza la consulta de un simulador web de compra y venta d
 
 El sistema ejecuta ambas operaciones (compra y venta), captura el valor resultante directamente desde la web y lo presenta de forma clara y reproducible, sin intervención manual.
 
-Qué hace
+Qué hace:
+
 	•	Automatiza interacciones reales en un simulador web
 	•	Ejecuta escenarios de compra y venta con monto configurable
 	•	Extrae y normaliza el resultado visible en pantalla
