@@ -1,5 +1,5 @@
-import asyncio
 import re
+import asyncio
 import streamlit as st
 from playwright.async_api import async_playwright
 
@@ -7,18 +7,17 @@ URL = "https://www.bancoestado.cl/bancoestado/simulaciones/comercio/simule_1.asp
 
 
 async def extraer_resultado(page) -> str:
-    # Espera por cualquier ocurrencia de "Resultado"
-    loc = page.get_by_text(re.compile("Resultado", re.I)).first
-    await loc.wait_for(timeout=15000)
+    loc = page.get_by_text(re.compile(r"\bResultado\b", re.I)).first
+    await loc.wait_for(timeout=20000)
 
-    # Intenta capturar el texto del contenedor más cercano
-    box = loc.locator("xpath=ancestor-or-self::*[self::p or self::div or self::li or self::td][1]")
+    box = loc.locator(
+        "xpath=ancestor-or-self::*[self::p or self::div or self::li or self::td][1]"
+    )
     try:
         txt = (await box.inner_text()).strip()
     except Exception:
         txt = (await loc.inner_text()).strip()
 
-    # Normaliza: busca línea con "Resultado" y devuelve lo que viene después
     lines = [l.strip() for l in txt.splitlines() if l.strip()]
     for i, line in enumerate(lines):
         if "resultado" in line.lower():
@@ -27,7 +26,6 @@ async def extraer_resultado(page) -> str:
             if i + 1 < len(lines):
                 return lines[i + 1].strip()
 
-    # Fallback: escaneo del body
     body = (await page.locator("body").inner_text()).splitlines()
     body = [l.strip() for l in body if l.strip()]
     for i, line in enumerate(body):
@@ -40,7 +38,7 @@ async def extraer_resultado(page) -> str:
     raise RuntimeError("No pude localizar el valor de 'Resultado'.")
 
 
-async def simular(operacion_texto: str, monto: str = "1", debug: bool = False) -> str:
+async def simular(operacion_texto: str, monto: str, debug: bool) -> str:
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
@@ -54,13 +52,11 @@ async def simular(operacion_texto: str, monto: str = "1", debug: bool = False) -
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             ),
-            extra_http_headers={
-                "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
-            },
+            extra_http_headers={"Accept-Language": "es-CL,es;q=0.9,en;q=0.8"},
         )
 
         page = await context.new_page()
-        resp = await page.goto(URL, wait_until="domcontentloaded", timeout=30000)
+        resp = await page.goto(URL, wait_until="domcontentloaded", timeout=45000)
 
         if resp is None:
             await browser.close()
@@ -69,14 +65,14 @@ async def simular(operacion_texto: str, monto: str = "1", debug: bool = False) -
             await browser.close()
             raise RuntimeError(f"HTTP {resp.status} al cargar la página.")
 
-        # Pequeña espera para DOMs que terminan de montar elementos
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(800)
 
-        # Click robusto: preferir radio por role; fallback a label/texto
+        # CLAVE: NO se clickea por texto. Se selecciona el radio por role/name.
         radio = page.get_by_role("radio", name=re.compile(operacion_texto, re.I))
         if await radio.count() > 0:
             await radio.first.check()
         else:
+            # Fallback: click al label asociado
             lbl = page.get_by_label(re.compile(operacion_texto, re.I))
             if await lbl.count() > 0:
                 await lbl.first.click(force=True)
@@ -85,21 +81,20 @@ async def simular(operacion_texto: str, monto: str = "1", debug: bool = False) -
                     html = await page.content()
                     await browser.close()
                     raise RuntimeError(
-                        "No encuentro el selector de operación. "
-                        f"HTML recibido (primeros 1200 chars):\n{html[:1200]}"
+                        f"No encuentro radio/label para '{operacion_texto}'. "
+                        f"HTML (primeros 1500 chars):\n{html[:1500]}"
                     )
                 await browser.close()
-                raise RuntimeError("No encuentro el selector de operación (radio/label).")
+                raise RuntimeError(f"No encuentro selector para '{operacion_texto}'.")
 
-        # Input de monto
-        await page.get_by_label(re.compile("Monto en US", re.I)).fill(monto)
+        await page.get_by_label(re.compile(r"Monto en US", re.I)).fill(monto)
 
-        # Submit: primero submit real
+        # Submit robusto
         submit = page.locator("input[type=submit], button[type=submit]")
         if await submit.count() > 0:
             await submit.first.click()
         else:
-            # Fallback a botones por texto
+            # Fallback por texto
             for btn in ("Simular", "Continuar", "Siguiente", "Aceptar"):
                 b = page.get_by_role("button", name=re.compile(btn, re.I))
                 if await b.count() > 0:
@@ -110,38 +105,40 @@ async def simular(operacion_texto: str, monto: str = "1", debug: bool = False) -
                     html = await page.content()
                     await browser.close()
                     raise RuntimeError(
-                        "No encontré botón para ejecutar la simulación. "
-                        f"HTML recibido (primeros 1200 chars):\n{html[:1200]}"
+                        "No encontré botón submit. "
+                        f"HTML (primeros 1500 chars):\n{html[:1500]}"
                     )
                 await browser.close()
-                raise RuntimeError("No encontré botón para ejecutar la simulación.")
+                raise RuntimeError("No encontré botón submit.")
 
-        await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        await page.wait_for_load_state("domcontentloaded", timeout=45000)
 
         resultado = await extraer_resultado(page)
         await browser.close()
         return resultado
 
 
-async def correr(debug: bool, monto: str):
-    compra = await simular("Cliente Compra", monto, debug=debug)
-    vende = await simular("Cliente Vende", monto, debug=debug)
+async def correr(monto: str, debug: bool):
+    compra = await simular("Cliente Compra", monto, debug)
+    vende = await simular("Cliente Vende", monto, debug)
     return compra, vende
 
 
-def run_async(coro):
+def run(coro):
     """
-    Streamlit a veces corre dentro de un event loop.
-    Esta función evita el error de 'asyncio.run() cannot be called from a running event loop'.
+    Streamlit puede correr con loop activo dependiendo del runtime.
+    Esto evita los problemas típicos de asyncio.run().
     """
     try:
         loop = asyncio.get_running_loop()
+        if loop.is_running():
+            new_loop = asyncio.new_event_loop()
+            try:
+                return new_loop.run_until_complete(coro)
+            finally:
+                new_loop.close()
     except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        # En entornos con loop activo, creamos una tarea y esperamos
-        return asyncio.new_event_loop().run_until_complete(coro)
+        pass
     return asyncio.run(coro)
 
 
@@ -149,11 +146,11 @@ st.set_page_config(page_title="USD Simulator Bot", layout="centered")
 st.title("USD Simulator Bot (Compra/Vende)")
 
 monto = st.text_input("Monto en USD", value="1")
-debug = st.checkbox("Debug (mostrar HTML si falla)", value=False)
+debug = st.checkbox("Debug (muestra HTML si falla)", value=False)
 
 if st.button("Ejecutar"):
-    with st.spinner("Consultando simulador..."):
-        compra, vende = run_async(correr(debug=debug, monto=monto))
+    with st.spinner("Consultando..."):
+        compra, vende = run(correr(monto=monto, debug=debug))
 
     st.write(f'Compra "{compra}"')
     st.write(f'Vende "{vende}"')
